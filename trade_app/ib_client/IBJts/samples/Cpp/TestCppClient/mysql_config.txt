@@ -1,0 +1,7 @@
+database=ib
+orderTable=bid_ask_data
+tradeTable=trade_data
+host=mydb
+port=3306
+user=root
+password=mysqlpassword

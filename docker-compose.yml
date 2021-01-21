@@ -1,0 +1,31 @@
+version: '3.4'
+services:
+  tws:
+    build: .
+    container_name: ib_gateway
+    volumes:
+        #      - ./ib/IBController.ini:/root/IBController/IBController.ini
+      - ./ib/jts.ini:/root/Jts/jts.ini
+      - ./IBCLinux-3.8.2/config.ini:/root/IBController/config.ini
+    environment:
+      TRADING_MODE: ${TWS_TRADING_MODE}
+      TWSUSERID: ${TWS_USER_ID}
+      TWSPASSWORD: ${TWS_PASSWORD}
+      FIXUSERID: 
+      FIXPASSWORD: 
+      XVFB_ARGS: -ac -screen 0 1024x768x16 +extension RANDR
+    restart: always
+    ports:
+      - 5902:5900
+  trade_app:
+    build: trade_app/ib_client
+    container_name: client_app
+    environment:
+      IB_GATEWAY_URLNAME: tws
+      IB_GATEWAY_URLPORT: ${TWS_PORT}
+      IB_ACCOUNT_STR: ${TWS_ACCOUNT_STR}
+      IB_MAX_LOSS: ${TWS_MAX_LOSS} 
+      MKT_DATA_TYPE: 4
+    restart: on-failure
+    depends_on:
+      - tws
