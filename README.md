@@ -4,6 +4,10 @@
 
 This repository complements the functionality of [my other repo.](github.com/tbrown122387/dockerized_logger) Unlike the other repo, which only logs data, this one does not log any data, and instead submits orders to Interactive Brokers. 
 
+## Warning
+
+Please carefully edit the trading logic before using a live account. If you launch this program as it is now, there is a nonnegligible chance you will zero out your account in a matter of seconds. 
+
 ## Quick start guide
 
 On a host machine that you have shell access to (remote or local), clone this repo, change the config files, then type 
@@ -67,4 +71,4 @@ The following mistakes don't really show up in the logs, so be careful:
 
 3. specifying paper/live and forgetting to change `IB_GATEWAY_URLPORT` in `docker-compose.yml`.
 
-
+4. Being already logged in somewhere else with the username/password you're trying to use

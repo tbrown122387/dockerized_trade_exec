@@ -26,7 +26,8 @@ void got_signal(int)
 
 
 const unsigned MAX_ATTEMPTS = 50;
-const unsigned SLEEP_TIME = 10; //seconds
+const unsigned SLEEP_TIME = 50; //seconds
+// keep in mind it takes about 16 seconds per symbol to request data...
 
 
 
