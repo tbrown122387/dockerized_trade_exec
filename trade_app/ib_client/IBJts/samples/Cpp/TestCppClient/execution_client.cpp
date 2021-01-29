@@ -40,9 +40,6 @@
 
 
 
-///////////////////////////////////////////////////////////
-// member funcs
-//! [socket_init]
 ExecClient::ExecClient() :
       m_osSignal(2000)//2-seconds timeout
     , m_pClient(new EClientSocket(this, &m_osSignal))
@@ -51,7 +48,6 @@ ExecClient::ExecClient() :
     , m_pReader(0)
     , m_extraAuth(false)
     , m_printing(true)
-    , m_closeout_only(false)
     , m_maxLoss(atof(std::getenv("IB_MAX_LOSS")))
     , m_ticker_config("/usr/src/app/IBJts/samples/Cpp/TestCppClient/tickers.txt")
     , m_positions(m_ticker_config)
@@ -73,24 +69,8 @@ ExecClient::ExecClient() :
 }
 
 
-//! [socket_init]
 ExecClient::~ExecClient()
 {
-    // close out all positions just in case you have them
-    close_all_positions();
-
-    // canceleverything you are subscribed to
-    m_pClient->cancelPnL(PNL_REGID);
-    m_pClient->cancelPositions();
-
-    // cancel all data subscriptions
-     for(unsigned int i = 0; i < m_ticker_config.size(); ++i){
-        std::string loc_sym = m_ticker_config.loc_syms(i);
-        m_pClient->cancelMktData(m_positions.getTradeID(loc_sym));
-        m_pClient->cancelMktData(m_positions.getOrderID(loc_sym));
-    }
-    
-    // free memory
     if (m_pReader)
         delete m_pReader;
     delete m_pClient;
@@ -99,7 +79,6 @@ ExecClient::~ExecClient()
 
 bool ExecClient::connect(const char *host, int port, int clientId)
 {
-	// trying to connect
 	printf( "Connecting to %s:%d clientId:%d\n", !( host && *host) ? "127.0.0.1" : host, port, clientId);
 	bool bRes = m_pClient->eConnect( host, port, clientId, m_extraAuth);
 	
@@ -135,32 +114,41 @@ void ExecClient::setConnectOptions(const std::string& connectOptions)
 void ExecClient::processMessages()
 {
 	// connection sequence, then oscillate back and forth
-	// between checking actual/desired position and checking pnl 
+	// between checking actual/desired position and checking pnl
+    // here's a chart:
+    //
 	// ST_REQTICKBYTICKDATA -> ST_REQPNL -> ST_REQPOSITIONS 
 	// -> (ST_CHECK_POSITIONS <-> ST_CHECK_PNL)
+    //                                  |
+    //                                  V
+    //                            ST_CLOSEOUT
+    //                                  |
+    //                                  V
+    //                             ST_UNSUBSCRIBE
 
 	switch (m_state) {
 
 		case ST_REQTICKBYTICKDATA:
-			reqTickByTickData();
-			m_state = ST_REQPNL;
+			reqTickByTickData(); // chanes m_state to ST_REQPNL
 			break;
 		case ST_REQPNL:
-			reqPNL();
-			m_state = ST_REQPOSITIONS;
+			reqPNL(); // changes m_state to ST_REQPOSITIONS
 			break;
 		case ST_REQPOSITIONS:
-			reqPositions();
-			m_state = ST_CHECK_POSITIONS;
+			reqPositions(); // changes m_state to ST_CHECK_POSITIONS
 			break;
 		case ST_CHECK_POSITIONS:
-			orderOperations(); 
-			m_state = ST_CHECK_PNL;
+			orderOperations(); // changes m_state to ST_CHECK_PNL 
 			break;
 		case ST_CHECK_PNL:
-			pnlOperation();
-			m_state = ST_CHECK_POSITIONS;
+			pnlOperation(); // changes m_state to either ST_CHECK_POSITIONS or ST_CLOSEOUT
 			break;
+        case ST_CLOSEOUT:
+            closeoutEverything(); // changes m_state to ST_UNSUBSCRIBE
+            break;
+        case ST_UNSUBSCRIBE:
+            unsubscribeAll();   // does not change m_state
+            break; // 
 	}
 
 	m_osSignal.waitForSignal();
@@ -168,22 +156,22 @@ void ExecClient::processMessages()
 	m_pReader->processMsgs();
 }
 
-//////////////////////////////////////////////////////////////////
-// methods
-//! [connectack]
+
 void ExecClient::connectAck() {
 	if (!m_extraAuth && m_pClient->asyncEConnect())
         m_pClient->startApi();
 }
-//! [connectack]
 
 
 void ExecClient::pnlOperation()
 {
     // set to "close-only" if you're losing money
     if(m_high_water_profit - m_current_profits > m_maxLoss) { 
-        std::cout << "SETTING TRADING MODE TO CLOSE-ONLY BECAUSE MAX LOSS WAS EXCEEDED\n";
-        m_closeout_only = true;
+        if( m_printing) std::cout << "max loss exceeded...entering clsoeout mode...\n";
+        m_state = ST_CLOSEOUT;
+    }else{
+        // tell API to keep checking positions (desired and actual)	
+        m_state = ST_CHECK_POSITIONS;
     }
 }
 
@@ -192,53 +180,65 @@ void ExecClient::orderOperations()
 {
     
     if(m_printing){
-        std::cout << "inside orderOperations() \n";
+        std::cout << "inside orderOperations(), potentially changing positions \n";
     }
-
-
-    if( !m_closeout_only) {
-
-        if(m_printing){
-		std::cout << "potentially opening positions...\n";
-	}
-
-        // iterate over all symbols, and send orders for the shares you want 
-        std::string loc_sym;
-        for( unsigned int i = 0; i < m_ticker_config.size(); ++i){
+    
+    // iterate over all symbols, and send orders for the shares you want 
+    std::string loc_sym;
+    for( unsigned int i = 0; i < m_ticker_config.size(); ++i){
             
-            loc_sym = m_ticker_config.loc_syms(i);
-            m_positions.getDesiredPosition(loc_sym);
-           
-            // if you need to get long or short, get the number of shares and do that 
-            if (m_positions.getDesiredPosition(loc_sym)
-                   < m_positions.getActualPosition(loc_sym) ){
+        loc_sym = m_ticker_config.loc_syms(i);
+        m_positions.getDesiredPosition(loc_sym);
+    
+        // if you need to get long or short, get the number of shares and do that 
+        if (m_positions.getDesiredPosition(loc_sym) < m_positions.getActualPosition(loc_sym) ){
 
-		unsigned numShares = 
+		    unsigned numShares = 
                     m_positions.getActualPosition(loc_sym)-
                     m_positions.getDesiredPosition(loc_sym); 
 
-                market_sell(loc_sym, numShares); 
+            market_sell(loc_sym, numShares); 
 
-                if( m_printing) std::cout << "now selling " << numShares << " shares\n";
+            if( m_printing) std::cout << "now selling " << numShares << " shares\n";
 
-            }else if( m_positions.getDesiredPosition(loc_sym)
-                    > m_positions.getActualPosition(loc_sym)){  
+        }else if( m_positions.getDesiredPosition(loc_sym) > m_positions.getActualPosition(loc_sym)){  
 
-                unsigned numShares = 
-                    m_positions.getDesiredPosition(loc_sym) -
-                    m_positions.getActualPosition(loc_sym);
+            unsigned numShares = 
+                        m_positions.getDesiredPosition(loc_sym) -
+                        m_positions.getActualPosition(loc_sym);
 
-                market_buy(loc_sym, numShares); 
+            market_buy(loc_sym, numShares); 
 
-                if( m_printing) std::cout << "now buying " << numShares << " shares\n";
-            }            
-        }
-
-	} else { // close-out mode only
-
-	        if(m_printing) std::cout << "close-out mode only!\n";
-	        close_all_positions();
+            if( m_printing) std::cout << "now buying " << numShares << " shares\n";
+        }            
 	}
+
+    // tell API to go check PNL  
+    m_state = ST_CHECK_PNL;
+}
+
+
+void ExecClient::closeoutEverything()
+{
+    // close out all positions just in case you have them
+    close_all_positions();
+
+    // set state to unsubscribe
+    m_state = ST_UNSUBSCRIBE;
+
+}
+
+
+void ExecClient::unsubscribeAll(){
+    
+    m_pClient->cancelPnL(PNL_REGID);
+    m_pClient->cancelPositions();
+    
+    for(unsigned int i = 0; i < m_ticker_config.size(); ++i){
+        std::string loc_sym = m_ticker_config.loc_syms(i);
+        m_pClient->cancelMktData(m_positions.getTradeID(loc_sym));
+        m_pClient->cancelMktData(m_positions.getOrderID(loc_sym));
+    }
 }
 
 
@@ -284,6 +284,9 @@ void ExecClient::reqTickByTickData()
 //        if(m_printing) std::cout << "waiting sixteen seconds between data requests\n";
 
     }
+
+    // send API to request PNL next
+    m_state = ST_REQPNL;
 }
 
 
@@ -294,28 +297,34 @@ void ExecClient::reqPNL()
     if( account_str.empty())
         throw std::invalid_argument("must specify a TWS_ACCOUNT_STR");
     m_pClient->reqPnL(PNL_REGID, account_str, "");
+
+    // tell API to go start requesting postion info now 
+    m_state = ST_REQPOSITIONS;
 }
 
 
 void ExecClient::reqPositions()
 {
-//    m_pClient->reqPositions();
+    //  m_pClient->reqPositions();
     std::string account_str = std::getenv("IB_ACCOUNT_STR");
-    m_pClient->reqPositionsMulti(POS_REGID, account_str, "TODO"); 
+    m_pClient->reqPositionsMulti(POS_REGID, account_str, "TODO");
+
+    // tell API to go start checking positions (desired and actual)
+    m_state = ST_CHECK_POSITIONS;
 }
 
-//! [nextvalidid]
+
 void ExecClient::nextValidId( OrderId orderId)
 {
 	if(m_printing)
         printf("Next Valid Id: %ld\n", orderId);
 	m_orderId = orderId;
 
+    // the starting state after connection is achieved
     m_state = ST_REQTICKBYTICKDATA; 
 }
 
 
-//! [error]
 void ExecClient::error(int id, int errorCode, const std::string& errorString)
 {
 	printf( "Error. Id: %d, Code: %d, Msg: %s\n", id, errorCode, errorString.c_str());
@@ -356,9 +365,8 @@ void ExecClient::updateAccountValue(const std::string& key, const std::string& v
                                        const std::string& currency, const std::string& accountName) {
 	printf("UpdateAccountValue. Key: %s, Value: %s, Currency: %s, Account Name: %s\n", key.c_str(), val.c_str(), currency.c_str(), accountName.c_str());
 }
-//! [updateaccountvalue]
 
-//! [updateportfolio]
+
 void ExecClient::updatePortfolio(const Contract& contract, double position,
                                     double marketPrice, double marketValue, double averageCost,
                                     double unrealizedPNL, double realizedPNL, const std::string& accountName){
@@ -463,22 +471,12 @@ void ExecClient::tickByTickAllLast(int reqId, int tickType, time_t time, double 
     // TODO: do something with last trade here
     // TODO: decide when and how to send to orderOperations
     // TODO: add information to rolling window
-    int rand_num = rand() % 100 + 1;
-    if(rand_num < 10){
-        m_positions.setDesiredPosition(loc_sym, 1);
-    }else if(rand_num > 90){
-        m_positions.setDesiredPosition(loc_sym, -1);
-    }else{
-        m_positions.setDesiredPosition(loc_sym, 0);
-    }
-
+    m_positions.setDesiredPosition(loc_sym, -1);
 }
 
 
 void ExecClient::tickByTickBidAsk(int reqId, time_t time, double bidPrice, double askPrice, int bidSize, int askSize, const TickAttribBidAsk& tickAttribBidAsk) {
 
-
-    //  printed stuff gets redirected to another logfile
     if(m_printing){
         std::cout << "\n\n";	
         printf("Tick-By-Tick. ReqId: %d, TickType: BidAsk, Time: %s, BidPrice: %g, AskPrice: %g, BidSize: %d, AskSize: %d, BidPastLow: %d, AskPastHigh: %d\n", 
@@ -489,7 +487,6 @@ void ExecClient::tickByTickBidAsk(int reqId, time_t time, double bidPrice, doubl
             << "\n";
     }
 
-    // store price info
     // TODO: do something with the bid/askdata
 }
 
@@ -533,7 +530,7 @@ inline void ExecClient::market_buy(const std::string& local_symbol, unsigned qty
 
 inline void ExecClient::close_all_positions() {
 
-    std::cout << "\n\nNOW CLOSING ALL POSITIONS\n\n";
+    std::cout << "NOW CLOSING ALL POSITIONS\n\n";
 
     for(unsigned int i = 0; i < m_ticker_config.size(); ++i){
         std::string loc_sym = m_ticker_config.loc_syms(i);

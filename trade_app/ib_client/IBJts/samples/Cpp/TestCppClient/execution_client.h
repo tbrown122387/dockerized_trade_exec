@@ -26,7 +26,9 @@ enum State {
     ST_REQPNL,
     ST_REQPOSITIONS,
     ST_CHECK_POSITIONS,
-    ST_CHECK_PNL
+    ST_CHECK_PNL,
+    ST_CLOSEOUT,
+    ST_UNSUBSCRIBE
 };
 
 class ExecClient : public EWrapper
@@ -53,6 +55,8 @@ private:
     void reqPNL();
     void reqPositions();
     void orderOperations();
+    void closeoutEverything();
+    void unsubscribeAll();
 public:
 	// events
 	#include "EWrapper_prototypes.h"
@@ -69,7 +73,6 @@ private:
 
     // new stuff! 
     const bool m_printing;
-    bool m_closeout_only;
     const double m_maxLoss;
     hft::FutSymsConfig m_ticker_config;
     hft::PositionMgr m_positions;
