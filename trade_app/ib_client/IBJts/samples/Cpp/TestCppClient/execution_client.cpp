@@ -116,8 +116,8 @@ void ExecClient::processMessages()
 	// connection sequence, then oscillate back and forth
 	// between checking actual/desired position and checking pnl
     // here's a chart:
-    //
-	// ST_REQTICKBYTICKDATA -> ST_REQPNL -> ST_REQPOSITIONS 
+	
+    // ST_REQTRADEDATA -> ST_REQORDERDATA -> ST_REQPNL -> ST_REQPOSITIONS 
 	// -> (ST_CHECK_POSITIONS <-> ST_CHECK_PNL)
     //                                  |
     //                                  V
@@ -128,10 +128,16 @@ void ExecClient::processMessages()
 
 	switch (m_state) {
 
-		case ST_REQTICKBYTICKDATA:
-			reqTickByTickData(); // chanes m_state to ST_REQPNL
+		case ST_REQTRADEDATA:
+			reqAllTradeData(); // changes m_state to ST_REQPNL
 			break;
-		case ST_REQPNL:
+        case ST_REQORDERDATA:
+            // need to wait more than 15 seconds to request two things
+            // from the same symbol
+			std::this_thread::sleep_for(std::chrono::seconds(16));
+            reqAllOrderData(); // changes m_state to ST_REQPNL
+			break;
+	    case ST_REQPNL:
 			reqPNL(); // changes m_state to ST_REQPOSITIONS
 			break;
 		case ST_REQPOSITIONS:
@@ -165,6 +171,8 @@ void ExecClient::connectAck() {
 
 void ExecClient::pnlOperation()
 {
+    if(m_printing) std::cout << "now checking your pnl info inside pnlOperation() \n";
+
     // set to "close-only" if you're losing money
     if(m_high_water_profit - m_current_profits > m_maxLoss) { 
         if( m_printing) std::cout << "max loss exceeded...entering clsoeout mode...\n";
@@ -179,9 +187,7 @@ void ExecClient::pnlOperation()
 void ExecClient::orderOperations()
 {
     
-    if(m_printing){
-        std::cout << "inside orderOperations(), potentially changing positions \n";
-    }
+    if(m_printing) { std::cout << "inside orderOperations(), potentially changing positions \n";  }
     
     // iterate over all symbols, and send orders for the shares you want 
     std::string loc_sym;
@@ -242,10 +248,32 @@ void ExecClient::unsubscribeAll(){
 }
 
 
-void ExecClient::reqTickByTickData() 
+void ExecClient::reqAllTradeData()
 {
-    if(m_printing) { std::cout << "requesting level1 and trade data...\n"; }
-    
+    for(unsigned int i = 0; i < m_ticker_config.size(); ++i){
+        
+        std::string loc_sym = m_ticker_config.loc_syms(i);
+        Contract contract;
+        contract.localSymbol = loc_sym;
+        contract.symbol = m_positions.getNonLocalSymbol(loc_sym);
+        contract.secType = m_positions.getSecType(loc_sym);
+        contract.currency = m_positions.getCurrency(loc_sym);
+        contract.exchange = m_positions.getExchange(loc_sym);
+        
+        if(m_printing) std::cout << "requesting trade data for " << contract.symbol << "\n";
+
+        m_pClient->reqTickByTickData(
+                m_positions.getTradeID(loc_sym),
+                contract,
+                "Last",
+                0, 
+                true); // last argument is ignored me thinks
+    }
+}
+
+
+void ExecClient::reqAllOrderData()
+{
     // request two types of data for all symbols 
     for(unsigned int i = 0; i < m_ticker_config.size(); ++i){
         
@@ -265,28 +293,7 @@ void ExecClient::reqTickByTickData()
                 "BidAsk",
                 0, // nonzero means historical data, too
                 true); // ignore size only changes?
-
-	    //No more than 1 tick-by-tick request can be made for the same instrument within 15 seconds.
-        if(m_printing) std::cout << "waiting sixteen seconds between data requests\n";
-        
-        std::this_thread::sleep_for(std::chrono::seconds(16));
-
-        if(m_printing) std::cout << "requesting trade data for " << contract.symbol << "\n";
-
-        m_pClient->reqTickByTickData(
-                m_positions.getTradeID(loc_sym),
-                contract,
-                "Last",
-                0, 
-                true); // last argument is ignored me thinks
-
-//        std::this_thread::sleep_for(std::chrono::seconds(16));
-//        if(m_printing) std::cout << "waiting sixteen seconds between data requests\n";
-
     }
-
-    // send API to request PNL next
-    m_state = ST_REQPNL;
 }
 
 
@@ -305,9 +312,7 @@ void ExecClient::reqPNL()
 
 void ExecClient::reqPositions()
 {
-    //  m_pClient->reqPositions();
-    std::string account_str = std::getenv("IB_ACCOUNT_STR");
-    m_pClient->reqPositionsMulti(POS_REGID, account_str, "TODO");
+    m_pClient->reqPositions();
 
     // tell API to go start checking positions (desired and actual)
     m_state = ST_CHECK_POSITIONS;
@@ -321,7 +326,7 @@ void ExecClient::nextValidId( OrderId orderId)
 	m_orderId = orderId;
 
     // the starting state after connection is achieved
-    m_state = ST_REQTICKBYTICKDATA; 
+    m_state = ST_REQTRADEDATA; 
 }
 
 
@@ -411,30 +416,27 @@ void ExecClient::execDetailsEnd( int reqId) {
 }
 
 
-
-//! [commissionreport]
 void ExecClient::commissionReport( const CommissionReport& commissionReport) {
 	if(m_printing)
         printf( "CommissionReport. %s - %g %s RPNL %g\n", commissionReport.execId.c_str(), commissionReport.commission, commissionReport.currency.c_str(), commissionReport.realizedPNL);
 }
-//! [commissionreport]
 
 
-void ExecClient::positionMulti( int reqId, const std::string& account,const std::string& modelCode, const Contract& contract, double pos, double avgCost) 
+void ExecClient::position( const std::string& account, const Contract& contract, double position, double avgCost)
 {
     if( m_printing) {
         std::cout << "backup checking that the position information is correct...\n";
-        printf( "Position. %s - Symbol: %s, SecType: %s, Currency: %s, Position: %g, Avg Cost: %g\n", account.c_str(), contract.symbol.c_str(), contract.secType.c_str(), contract.currency.c_str(), pos, avgCost);
+        printf( "Position. %s - Symbol: %s, SecType: %s, Currency: %s, Position: %g, Avg Cost: %g\n", account.c_str(), contract.symbol.c_str(), contract.secType.c_str(), contract.currency.c_str(), position, avgCost);
     }
 
     // just in case execDetails is feeding us trash, 
     // this will reset our position   
-    int signedShares = static_cast<int>(pos);
+    int signedShares = static_cast<int>(position);
     m_positions.setPosition(contract.localSymbol, signedShares);
 }
 
 
-void ExecClient::positionMultiEnd( int reqId) {
+void ExecClient::positionEnd() {
     // changing m_state, but t will get changed anyway 
     m_state = ST_CHECK_POSITIONS;
 }
@@ -511,7 +513,15 @@ inline void ExecClient::market_sell(const std::string& local_symbol, unsigned qt
     contract.currency = m_positions.getCurrency(local_symbol);
     contract.exchange = m_positions.getExchange(local_symbol);
     contract.localSymbol = local_symbol; 
-    m_pClient->placeOrder(m_orderId++, contract, le_order); 
+    m_pClient->placeOrder(m_orderId++, contract, le_order);
+
+    // change your "actual position" 
+    // this only makes sense because we're sending market orders 
+    // very quickly, and we can't wait for a position update.
+    // If we did, we would spam orders super hard and build up a 
+    // gigantic position accidentally
+    int signed_shares = -qty;
+    m_positions.incrementPosition(local_symbol, signed_shares); 
 }
 
 
@@ -524,7 +534,15 @@ inline void ExecClient::market_buy(const std::string& local_symbol, unsigned qty
     contract.currency = m_positions.getCurrency(local_symbol);
     contract.exchange = m_positions.getExchange(local_symbol);
     contract.localSymbol = local_symbol; 
-    m_pClient->placeOrder(m_orderId++, contract, le_order); 
+    m_pClient->placeOrder(m_orderId++, contract, le_order);
+
+    // change your "actual position" 
+    // this only makes sense because we're sending market orders 
+    // very quickly, and we can't wait for a position update.
+    // If we did, we would spam orders super hard and build up a 
+    // gigantic position accidentally 
+    int signed_shares = qty;
+    m_positions.incrementPosition(local_symbol, signed_shares);
 }
 
 
@@ -615,10 +633,10 @@ void ExecClient::receiveFA(faDataType pFaDataType, const std::string& cxml) {}
 void ExecClient::tickPrice( TickerId tickerId, TickType field, double price, const TickAttrib& attribs) {}
 void ExecClient::historicalDataUpdate(TickerId reqId, const Bar& bar) {}
 void ExecClient::pnlSingle(int reqId, int pos, double dailyPnL, double unrealizedPnL, double realizedPnL, double value) {}
-void ExecClient::position( const std::string& account, const Contract& contract, double position, double avgCost) {}
-void ExecClient::positionEnd() {}
 void ExecClient::winError( const std::string& str, int lastError) {}
 void ExecClient::completedOrdersEnd() {}
+void ExecClient::positionMulti( int reqId, const std::string& account,const std::string& modelCode, const Contract& contract, double pos, double avgCost){} 
+void ExecClient::positionMultiEnd( int reqId) {}
 
 
 

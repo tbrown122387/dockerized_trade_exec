@@ -22,7 +22,8 @@ class EClientSocket;
 
 enum State {
     ST_CONNECT,
-    ST_REQTICKBYTICKDATA,
+    ST_REQTRADEDATA,
+    ST_REQORDERDATA,
     ST_REQPNL,
     ST_REQPOSITIONS,
     ST_CHECK_POSITIONS,
@@ -51,7 +52,8 @@ public:
 
 private:
     void pnlOperation();
-    void reqTickByTickData();
+    void reqAllTradeData();
+    void reqAllOrderData();
     void reqPNL();
     void reqPositions();
     void orderOperations();
