@@ -129,19 +129,19 @@ void ExecClient::processMessages()
 	switch (m_state) {
 
 		case ST_REQTRADEDATA:
-			reqAllTradeData(); // changes m_state to ST_REQPNL
+			reqAllTradeData(); // changes m_state to ST_REQORDERDATA
 			break;
-        case ST_REQORDERDATA:
-            // need to wait more than 15 seconds to request two things
-            // from the same symbol
+	        case ST_REQORDERDATA:
+        	    	// need to wait more than 15 seconds to request two things
+           		 // from the same symbol
 			std::this_thread::sleep_for(std::chrono::seconds(16));
-            reqAllOrderData(); // changes m_state to ST_REQPNL
+            		reqAllOrderData(); // changes m_state to ST_REQPNL
 			break;
-	    case ST_REQPNL:
+	    	case ST_REQPNL:
 			reqPNL(); // changes m_state to ST_REQPOSITIONS
 			break;
 		case ST_REQPOSITIONS:
-			reqPositions(); // changes m_state to ST_CHECK_POSITIONS
+			reqPositions(); // positionEnd() changes m_state to ST_CHECK_POSITIONS
 			break;
 		case ST_CHECK_POSITIONS:
 			orderOperations(); // changes m_state to ST_CHECK_PNL 
@@ -149,12 +149,12 @@ void ExecClient::processMessages()
 		case ST_CHECK_PNL:
 			pnlOperation(); // changes m_state to either ST_CHECK_POSITIONS or ST_CLOSEOUT
 			break;
-        case ST_CLOSEOUT:
-            closeoutEverything(); // changes m_state to ST_UNSUBSCRIBE
-            break;
-        case ST_UNSUBSCRIBE:
-            unsubscribeAll();   // does not change m_state
-            break; // 
+        	case ST_CLOSEOUT:
+            		closeoutEverything(); // changes m_state to ST_UNSUBSCRIBE
+            		break;
+        	case ST_UNSUBSCRIBE:
+            		unsubscribeAll();   // does not change m_state
+            		break; // 
 	}
 
 	m_osSignal.waitForSignal();
@@ -269,6 +269,8 @@ void ExecClient::reqAllTradeData()
                 0, 
                 true); // last argument is ignored me thinks
     }
+
+    m_state = ST_REQORDERDATA;
 }
 
 
@@ -294,6 +296,8 @@ void ExecClient::reqAllOrderData()
                 0, // nonzero means historical data, too
                 true); // ignore size only changes?
     }
+
+    m_state = ST_REQPNL;
 }
 
 
@@ -313,9 +317,7 @@ void ExecClient::reqPNL()
 void ExecClient::reqPositions()
 {
     m_pClient->reqPositions();
-
-    // tell API to go start checking positions (desired and actual)
-    m_state = ST_CHECK_POSITIONS;
+    //positionEnd() will change m_state to ST_CHECK_POSITIONS
 }
 
 
@@ -437,7 +439,11 @@ void ExecClient::position( const std::string& account, const Contract& contract,
 
 
 void ExecClient::positionEnd() {
-    // changing m_state, but t will get changed anyway 
+    if( m_printing) std::cout << "positions have been updated for the very first time\n";
+
+    // changing m_state to allow starting up
+    // api to start checking positions now
+    // otherwise it would've started placing orders without knowing what's up 
     m_state = ST_CHECK_POSITIONS;
 }
 
